@@ -1,8 +1,10 @@
 # xhs-mcp
 
 A Python MCP server for **searching Xiaohongshu and reading posts**. It uses
-Playwright and a dedicated local Chromium profile. No official API, password
-configuration, terminal-browser, or API-signing service is required.
+`puppeteer-core` through a small Node.js helper and a dedicated local browser
+profile. It uses your installed Chrome or Chromium: **no browser is bundled or
+downloaded**. No official API, password configuration, terminal-browser, or
+API-signing service is required.
 
 ## Tools
 
@@ -16,17 +18,25 @@ image OCR, video transcription, and short/share URL resolution are not supported
 
 ## Install
 
-Requires [uv](https://docs.astral.sh/uv/), Python 3.12–3.14, and macOS or Linux.
-The profile lock uses the Unix `fcntl` API.
+Requires [uv](https://docs.astral.sh/uv/), Python 3.12–3.14, Node.js 22.12+ with
+npm, an installed Chrome or Chromium browser, and macOS or Linux. The profile
+lock uses the Unix `fcntl` API.
 
 ```bash
 git clone git@github.com:allenwang2333/xhs-mcp.git
 cd xhs-mcp
 uv sync --frozen
-uv run playwright install chromium
+uv run xhs-mcp setup
 ```
 
-On Linux, you may need `uv run playwright install --with-deps chromium`.
+`setup` installs only the locked Node.js packages with lifecycle scripts
+disabled. It does not install a browser. Chrome is found through Puppeteer's
+`chrome` channel. To use a Chromium build at another location, set
+`XHS_CHROME_PATH` to its executable path for both login and the MCP server.
+
+Puppeteer does not make the browser engine smaller or guarantee lower RAM use.
+This setup saves disk space by removing the Python browser driver and reusing
+an existing browser instead of downloading another copy.
 
 ## Log in
 
@@ -93,11 +103,16 @@ lazy, so listing tools does not open the site or require login.
 | --- | --- | --- |
 | `XHS_PROFILE_DIR` | `~/.local/share/xhs-mcp/browser-profile` | Dedicated browser session directory |
 | `XHS_HEADLESS` | `true` | Set to `false`, `0`, or `no` to show the browser during tool calls |
+| `XHS_CHROME_PATH` | Installed Chrome | Optional Chrome/Chromium executable path |
 
 CLI options `--profile PATH` and `--headed` override these settings. Login
 always shows the browser. Use the same profile for login and server requests.
 If headless requests are blocked but normal browsing works, set
 `XHS_HEADLESS=false` in the MCP server's environment using `pi mcp add --env`.
+
+The existing dedicated profile path is unchanged. A different browser build
+may require you to log in again. Existing Pi registrations keep the same
+Python command; run `/reload` after updating the server.
 
 ## Credentials and privacy
 
@@ -129,7 +144,8 @@ bypass CAPTCHA, login requirements, or network restrictions.
 - **Login activation/IP restriction:** open the login browser and follow the
   site's network guidance. Repeated tool calls will not fix an IP block.
 - **HTTP error or timeout:** check the site manually before retrying.
-- **Browser missing:** run `uv run playwright install chromium`.
+- **Node packages missing:** run `uv run xhs-mcp setup`.
+- **Browser missing:** install Chrome, or set `XHS_CHROME_PATH` to Chromium.
 - **Profile busy:** finish the other request or login, then retry.
 - **No readable cards/content:** the site layout may need updated selectors.
 
@@ -142,17 +158,20 @@ dates are displayed strings, not normalized values.
 ## Verification
 
 ```bash
+node --check src/xhs_mcp/puppeteer/bridge.mjs
+node --check tests/puppeteer-fixture.mjs
 uv run ruff check .
 uv run ruff format --check .
 uv run pytest -q
 ```
 
 Tests cover URL and input validation, rendered search/post extraction in real
-Chromium with local page fixtures, login/verification/error states, profile
+Chrome/Chromium through Puppeteer with local page fixtures, login/error states,
 locking and cookie persistence, cancellation cleanup, and real MCP stdio
 initialization and error responses. Tests do not use your Xiaohongshu account.
 
-During initial development, the live site returned login activation error
-`300012` (IP risk) from this network before authentication. The server detects
-that restriction. **Authenticated live search and reading are not yet verified;
-fixture tests cannot establish that current live selectors still match.**
+Live search has also been checked through the registered MCP entry using the
+saved login after the Puppeteer migration. Live post reading can still be
+restricted by the site. Fixture tests do not prove that every live post can
+be opened. The server reports login, verification, and IP restrictions without
+trying to bypass them.

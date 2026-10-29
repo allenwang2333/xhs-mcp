@@ -9,7 +9,6 @@ description = "Read-only Xiaohongshu search and post tools using a local browser
 requires-python = ">=3.12,<3.15"
 dependencies = [
   "mcp>=1.26,<2",
-  "playwright>=1.58,<2",
 ]
 
 [project.scripts]

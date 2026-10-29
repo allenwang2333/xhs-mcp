@@ -162,9 +162,12 @@ async def test_changed_layout_times_out_with_actionable_error(site):
 
 
 async def test_normal_post_text_does_not_trigger_verification(page):
-    await page.set_content(
-        '<div class="login-container" style="display:none">登录</div>'
-        '<h1 id="detail-title">关于安全验证和笔记已删除</h1>'
+    await page._request(
+        "set_content",
+        {
+            "html": '<div class="login-container" style="display:none">登录</div>'
+            '<h1 id="detail-title">关于安全验证和笔记已删除</h1>'
+        },
     )
     assert await page.evaluate(PAGE_STATE, "post") == "ready"
 
@@ -191,41 +194,69 @@ async def test_cancellation_releases_operation_lock(monkeypatch, tmp_path):
 async def test_profile_lock_and_cookie_persistence(tmp_path):
     settings = Settings(tmp_path / "profile")
     async with browser_page(settings) as page:
-        await page.context.add_cookies(
-            [
-                {
-                    "name": "test_session",
-                    "value": "fixture-only",
-                    "domain": ".xiaohongshu.com",
-                    "path": "/",
-                    "expires": 2_000_000_000,
-                }
-            ]
+        await page._request(
+            "set_cookies",
+            {
+                "cookies": [
+                    {
+                        "name": "test_session",
+                        "value": "fixture-only",
+                        "domain": ".xiaohongshu.com",
+                        "path": "/",
+                        "expires": 2_000_000_000,
+                    }
+                ]
+            },
         )
         with pytest.raises(XhsError, match="profile is busy"):
             async with browser_page(settings):
                 pytest.fail("Concurrent profile use must fail")
     assert settings.profile_dir.stat().st_mode & 0o777 == 0o700
     async with browser_page(settings) as page:
-        cookies = await page.context.cookies()
+        cookies = await page._request("cookies")
         assert any(c["name"] == "test_session" and c["value"] == "fixture-only" for c in cookies)
 
 
 async def test_external_top_level_navigation_is_blocked(tmp_path):
-    from playwright.async_api import Error as PlaywrightError
+    from xhs_mcp.bridge import PuppeteerError
 
     async with browser_page(Settings(tmp_path / "profile")) as page:
-        with pytest.raises(PlaywrightError, match="ERR_FAILED"):
+        with pytest.raises(PuppeteerError, match="request"):
             await page.goto("https://example.com")
 
 
 async def test_same_site_http_redirect_upgrades_without_http_network_request(tmp_path):
     async with browser_page(Settings(tmp_path / "profile")) as page:
-
-        async def secure_page(route):
-            await route.fulfill(content_type="text/html", body="<p>Fixture</p>")
-
-        await page.route("https://www.xiaohongshu.com/**", secure_page)
+        await page._request("fixture", {"html": "<p>Fixture</p>", "status": 200})
         await page.goto("http://www.xiaohongshu.com/website-login/error?error_code=300012")
-        assert page.url == ("https://www.xiaohongshu.com/website-login/error?error_code=300012")
+        assert await page.evaluate("location.href") == (
+            "https://www.xiaohongshu.com/website-login/error?error_code=300012"
+        )
         assert await page.evaluate(PAGE_STATE, "search") == "restricted"
+
+
+async def test_cancelled_request_closes_helper_and_releases_profile(tmp_path):
+    settings = Settings(tmp_path / "profile")
+    started = asyncio.Event()
+    processes = []
+
+    async def request():
+        async with browser_page(settings) as page:
+            processes.append(page.process)
+            started.set()
+            await page.wait_for_function("() => false")
+
+    task = asyncio.create_task(request())
+    await asyncio.wait_for(started.wait(), timeout=10)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert processes[0].returncode is not None
+    async with browser_page(settings):
+        pass
+
+
+async def test_missing_chrome_has_actionable_error(tmp_path):
+    browser = XhsBrowser(Settings(tmp_path / "profile", chrome_path=tmp_path / "missing-chrome"))
+    with pytest.raises(XhsError, match="XHS_CHROME_PATH"):
+        await browser.search_posts("coffee")

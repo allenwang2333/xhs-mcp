@@ -1,10 +1,13 @@
 import argparse
 import asyncio
 import os
+import shutil
+import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
 
+from .bridge import HELPER_DIR
 from .browser import XhsError, login
 from .config import Settings
 from .server import create_server
@@ -12,7 +15,7 @@ from .server import create_server
 
 def main():
     parser = argparse.ArgumentParser(description="Read-only Xiaohongshu browser MCP server")
-    parser.add_argument("command", choices=("serve", "login"), nargs="?", default="serve")
+    parser.add_argument("command", choices=("serve", "login", "setup"), nargs="?", default="serve")
     parser.add_argument("--profile", type=Path, help="Use a dedicated browser profile directory")
     parser.add_argument(
         "--headed", action="store_true", help="Show the browser during MCP requests"
@@ -25,13 +28,30 @@ def main():
     if args.headed:
         settings = replace(settings, headless=False)
     try:
-        if args.command == "login":
+        if args.command == "setup":
+            npm = shutil.which("npm")
+            if not npm:
+                raise XhsError("Install Node.js 22.12+ and npm, then run setup again.")
+            subprocess.run(
+                [
+                    npm,
+                    "ci",
+                    "--prefix",
+                    str(HELPER_DIR),
+                    "--omit=dev",
+                    "--ignore-scripts",
+                    "--no-audit",
+                    "--no-fund",
+                ],
+                check=True,
+            )
+        elif args.command == "login":
             if not sys.stdin.isatty():
                 parser.error("login requires an interactive terminal")
             asyncio.run(login(settings))
         else:
             create_server(settings).run(transport="stdio")
-    except (XhsError, KeyboardInterrupt) as exc:
+    except (XhsError, KeyboardInterrupt, subprocess.CalledProcessError) as exc:
         if isinstance(exc, XhsError):
             print(str(exc), file=sys.stderr)
         raise SystemExit(1) from None

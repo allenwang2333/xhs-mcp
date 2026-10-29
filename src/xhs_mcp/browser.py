@@ -2,12 +2,10 @@ import asyncio
 import fcntl
 import re
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from playwright.async_api import Error as PlaywrightError
-from playwright.async_api import Page, Route, async_playwright
-from playwright.async_api import TimeoutError as PlaywrightTimeout
-
+from .bridge import PuppeteerError, PuppeteerPage
 from .config import Settings
 from .extract import PAGE_STATE, POST_DETAIL, SEARCH_CARDS
 from .models import Post, SearchPost, SearchResults
@@ -63,45 +61,13 @@ async def browser_page(settings: Settings):
                 "Browser profile is busy. Finish login or the other request, then retry."
             ) from None
         try:
-            async with async_playwright() as playwright:
-                try:
-                    context = await playwright.chromium.launch_persistent_context(
-                        user_data_dir=str(profile),
-                        headless=settings.headless,
-                        viewport={"width": 1440, "height": 1000},
-                        locale="zh-CN",
-                    )
-                except PlaywrightError:
-                    raise XhsError(
-                        "Cannot start Chromium. Run 'uv run playwright install chromium'. "
-                        "If another browser uses this profile, close it first."
-                    ) from None
-                try:
-                    page = context.pages[0] if context.pages else await context.new_page()
-                    page.set_default_timeout(settings.timeout_ms)
-                    page.set_default_navigation_timeout(settings.timeout_ms)
-                    await context.route("**/*", restrict_navigation)
-                    yield page
-                finally:
-                    await context.close()
+            page = await PuppeteerPage.launch(settings)
+            try:
+                yield page
+            finally:
+                await page.close()
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
-
-
-async def restrict_navigation(route: Route):
-    request = route.request
-    # Only restrict top-level navigation. Site assets and login frames use other hosts.
-    if request.is_navigation_request() and request.frame.parent_frame is None:
-        url = urlsplit(request.url)
-        if url.scheme == "http" and url.hostname in HOSTS and url.port in (None, 80):
-            # The site sometimes uses HTTP redirects. Upgrade without sending an HTTP request.
-            secure_url = urlunsplit(("https", url.hostname, url.path, url.query, ""))
-            await route.fulfill(status=307, headers={"location": secure_url})
-            return
-        if url.scheme != "https" or url.hostname not in HOSTS or url.port not in (None, 443):
-            await route.abort()
-            return
-    await route.continue_()
 
 
 class XhsBrowser:
@@ -115,24 +81,31 @@ class XhsBrowser:
             try:
                 async with browser_page(self.settings) as page:
                     yield page
-            except PlaywrightTimeout:
+            except PuppeteerError as exc:
+                messages = {
+                    "node": "Node.js 22.12+ is required. Install Node.js, then retry.",
+                    "dependencies": "Run 'uv run xhs-mcp setup' to install puppeteer-core.",
+                    "launch": (
+                        "Cannot start Chrome. Install Chrome or set XHS_CHROME_PATH to your "
+                        "Chromium executable. Close other browsers using this profile."
+                    ),
+                    "timeout": (
+                        "Xiaohongshu did not load in time. Retry, or run 'uv run xhs-mcp login' "
+                        "to check login and verification."
+                    ),
+                }
                 raise XhsError(
-                    "Xiaohongshu did not load in time. Retry, or run 'uv run xhs-mcp login' "
-                    "to check login and verification."
-                ) from None
-            except PlaywrightError:
-                raise XhsError(
-                    "Browser request failed. Run 'uv run xhs-mcp login' "
-                    "to check the site, then retry."
+                    messages.get(
+                        exc.code,
+                        "Browser request failed. Run 'uv run xhs-mcp login' to check the site.",
+                    )
                 ) from None
 
-    async def _navigate(self, page: Page, url: str, kind: str) -> str:
-        response = await page.goto(url, wait_until="domcontentloaded")
-        if response and response.status >= 400:
-            raise XhsError(f"Xiaohongshu returned HTTP {response.status}. Try the site manually.")
-        handle = await page.wait_for_function(PAGE_STATE, arg=kind)
-        state = await handle.json_value()
-        await handle.dispose()
+    async def _navigate(self, page: PuppeteerPage, url: str, kind: str) -> str:
+        status = await page.goto(url)
+        if status and status >= 400:
+            raise XhsError(f"Xiaohongshu returned HTTP {status}. Try the site manually.")
+        state = await page.wait_for_function(PAGE_STATE, kind)
         self._check_state(state)
         return state
 
@@ -216,9 +189,9 @@ class XhsBrowser:
 
 
 async def login(settings: Settings):
-    headed = Settings(profile_dir=settings.profile_dir, headless=False)
-    async with browser_page(headed) as page:
-        await page.goto(f"{BASE_URL}/explore", wait_until="domcontentloaded")
+    headed = replace(settings, headless=False)
+    async with XhsBrowser(headed)._page() as page:
+        await page.goto(f"{BASE_URL}/explore")
         print("Log in or finish verification in the browser window.")
         prompt = "When finished, press Enter here to save and close the browser: "
         await asyncio.to_thread(input, prompt)
