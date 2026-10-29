@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "xhs-mcp"
+version = "0.1.0"
+description = "Read-only Xiaohongshu search and post tools using a local browser session"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+  "mcp>=1.26,<2",
+  "playwright>=1.58,<2",
+]
+
+[project.scripts]
+xhs-mcp = "xhs_mcp.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "ruff>=0.12,<1"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
